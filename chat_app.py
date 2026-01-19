@@ -110,7 +110,22 @@ SCHEMA:
 USER QUERY:
 "{query}"
 
-UNIT CONVERSION RULES (CRITICAL):
+CRITICAL FILTER RULES:
+1. If query mentions specific locations (PPBC, PPCAL, PPMTL, etc.) → MUST filter by Location column
+2. If query mentions specific product types (BEAMS, COILS, PIPE, SHEET) → MUST filter by Product Type
+3. Extract ALL mentioned filters and apply them BEFORE grouping/aggregating
+
+FILTER EXAMPLES:
+Query: "show Total Wt for PPBC" 
+Code: result = df[df['Location'] == 'PPBC']['Total Wt (Tons )'].sum()
+
+Query: "show BEAMS at PPMTL grouped by Product Type"
+Code: result = df[(df['Location'] == 'PPMTL') & (df['Product Type'] == 'BEAMS')].groupby('Product Type')['Total Wt (Tons )'].sum()
+
+Query: "Total Wt grouped by Product Type and Location for PPBC"
+Code: result = df[df['Location'] == 'PPBC'].groupby(['Product Type', 'Location'])['Total Wt (Tons )'].sum()
+
+UNIT CONVERSION RULES:
 The spreadsheet has weight columns in specific units:
 - Total Wt (Tons )  → in TONS
 - Wt/Ft (lbs)       → in POUNDS per foot  
@@ -120,27 +135,15 @@ If user asks for different units, CONVERT:
 - Tons to kgs: multiply by 1000
 - Tons to lbs: multiply by 2204.62
 - lbs to kgs: multiply by 0.453592
-- lbs to tons: divide by 2204.62
-- kgs to tons: divide by 1000
-- kgs to lbs: divide by 0.453592
-
-EXAMPLE CONVERSIONS:
-Query: "total weight in kgs"
-Code: result = (df['Total Wt (Tons )'].sum() * 1000)  # Convert tons to kgs
-
-Query: "weight in lbs grouped by Location"
-Code: result = df.groupby('Location')['Total Wt (Tons )'].sum() * 2204.62  # Convert to lbs
-
-Query: "Total Wt (Tons) by Location"  
-Code: result = df.groupby('Location')['Total Wt (Tons )'].sum()  # No conversion needed
 
 INSTRUCTIONS:
-1. Analyze if user requested specific units (kgs, lbs, tons)
-2. Check what units the actual column uses
-3. Apply conversion if units differ
-4. Use df as the DataFrame variable
-5. Store result in 'result' variable
-6. Return ONLY valid pandas code, no explanations
+1. FIRST: Extract all filter criteria from query (locations, product types, etc.)
+2. Apply filters using df[...] before any grouping
+3. Then apply grouping/aggregation
+4. Finally apply unit conversion if needed
+5. Use df as the DataFrame variable
+6. Store result in 'result' variable
+7. Return ONLY valid pandas code, no explanations
 
 Generate the pandas code:
 """
@@ -258,32 +261,36 @@ Return ONLY the reformulated query as plain text, nothing else.
 
 def generate_single_agent_clarification(agent_name: str, agent_output: Dict[str, Any], query: str, client: OpenAI) -> str:
     """Generate clarification question for a single specific agent"""
+    
+    # Extract the actual details from agent detection
+    details = agent_output.get('details', 'Ambiguity detected')
+    
     prompt = f"""You are helping to clarify an ambiguous spreadsheet query.
 
 User Query: "{query}"
 
 Agent: {agent_output.get('agent_name', agent_name)}
-Function: {agent_output.get('description', '')}
-Issue Detected: {agent_output.get('details', 'Ambiguity detected')}
+Agent's Analysis: {details}
 
-Your task: Generate ONE clear, concise clarification question to resolve this specific ambiguity.
+Your task: Generate ONE clear, concise clarification question based on the agent's analysis.
 
-Guidelines:
-- Ask about ONE thing only (don't combine multiple questions)
-- Provide specific options when relevant
+CRITICAL RULES:
+- Use the EXACT column names and values from the agent's analysis
+- Do NOT make up example data (Sales, Expenses, Electronics, etc.)
+- Extract options from the agent's analysis details
 - Keep it conversational and user-friendly
-- Focus ONLY on this agent's concern
+- Ask about ONE thing only
 
 Examples:
 
-For COLUMN ambiguity:
-"Which weight metric would you like? Options: Wt/Ft (lbs), WT/Pce (lbs), or Total Wt (Tons)?"
+Agent Analysis: "Ambiguous column reference: 'weight' could be Wt/Ft (lbs), WT/Pce (lbs), or Total Wt (Tons )"
+Question: "Which weight metric would you like? Options: Wt/Ft (lbs), WT/Pce (lbs), or Total Wt (Tons)?"
 
-For AGGREGATION ambiguity:
-"How would you like to group the results? Options: by Location, by Product Type, or show overall total?"
+Agent Analysis: "Query lacks specificity - no location filter specified"
+Question: "Which location? Options: PPBC, PPCAL, PPMTL, or all locations?"
 
-For FILTER ambiguity:
-"Which location would you like to see? Options: PPBC, PPCAL, PPMTL, or all locations?"
+Agent Analysis: "Missing grouping criteria"
+Question: "How would you like to group the results? Options: by Location, by Product Type, or show overall total?"
 
 Return ONLY the clarification question, nothing else.
 """

@@ -272,7 +272,7 @@ class ValueAmbiguityAgent(BaseLLMAgent):
         for col, values in self.categorical_columns.items():
             cat_context += f"- {col}: {', '.join(map(str, values[:15]))}\n"
         
-        prompt = f"""You are analyzing a user query to detect value/entity ambiguities in a spreadsheet context.
+        prompt = f"""You are a STRICT value ambiguity detector for spreadsheet queries.
 
 CATEGORICAL COLUMNS AND VALUES:
 {cat_context}
@@ -280,24 +280,34 @@ CATEGORICAL COLUMNS AND VALUES:
 USER QUERY:
 "{query}"
 
-TASK: Identify if any values mentioned in the query are ambiguous because they:
-1. Appear in multiple columns
-2. Exist across multiple contexts (e.g., "BEAMS" exists at multiple locations)
+🚨 YOUR ONLY JOB: Detect country/entity/location name ambiguities
+
+DO NOT FLAG:
+- Column selection (that's COLUMN agent's job)
+- Grouping/aggregation (that's AGGREGATION agent's job)
+- "weight", "value", "stock" references (COLUMN agent handles this)
+
+ONLY FLAG AS AMBIGUOUS:
+1. Country names (USA, Canada, Korea) → Ask which field contains this
+2. Entity references that could be in multiple fields
+3. Vague location references
 
 Examples:
-- Query: "Show me BEAMS" → Ambiguous: BEAMS exists at multiple locations (PPBC, PPCAL, etc.)
-- Query: "Products at PPBC" → Not ambiguous: Location is specific
+❌ "Show weight" → NOT your concern (COLUMN agent handles this)
+❌ "Total value" → NOT your concern (COLUMN agent handles this)
+✅ "Show products in USA" → AMBIGUOUS (which field has USA?)
+✅ "Give me Canada items" → AMBIGUOUS (where is Canada specified?)
+✅ "Items from Korea" → AMBIGUOUS (which field contains Korea?)
 
 Respond in JSON format:
 {{
   "ambiguous": true/false,
   "ambiguous_entities": [
     {{
-      "entity": "BEAMS",
-      "type": "contextual_ambiguity",
-      "column": "Product Type",
-      "issue": "BEAMS exists at multiple locations",
-      "contexts": ["PPBC", "PPCAL", "PPMTL"]
+      "entity": "USA",
+      "type": "unclear_field",
+      "issue": "Not specified which field contains 'USA'",
+      "possible_fields": ["Product Description", "Location codes"]
     }}
   ]
 }}
@@ -444,7 +454,7 @@ class TemporalFilterAmbiguityAgent(BaseLLMAgent):
     def detect_ambiguity(self, query: str) -> Dict[str, Any]:
         """Use LLM to detect filter/temporal ambiguities"""
         
-        prompt = f"""You are analyzing a user query to detect missing filter criteria or temporal ambiguities.
+        prompt = f"""You are a STRICT filter ambiguity detector for spreadsheet queries.
 
 AVAILABLE FILTERS:
 {', '.join(self.categorical_columns)}
@@ -452,15 +462,29 @@ AVAILABLE FILTERS:
 USER QUERY:
 "{query}"
 
-TASK: Identify if the query is too broad or lacks necessary filter criteria:
-1. Uses broad terms like "all", "every", "total" without specific filters
-2. Requests data without specifying which subset (which location? which product type?)
-3. Has temporal references without specific dates/ranges
+🚨 STRICT RULES - FLAG AS AMBIGUOUS IF:
+
+1. Query uses broad terms WITHOUT specific filters:
+   - "List products" → AMBIGUOUS: Which location? Which product type? All 18k records?
+   - "Show inventory" → AMBIGUOUS: No filter criteria specified
+   - "Display stock" → AMBIGUOUS: Which location(s)?
+
+2. Query lacks specificity about scope:
+   - "Show BEAMS" → AMBIGUOUS: At which location? All locations?
+   - "Total weight" → AMBIGUOUS: For all locations or specific one?
+
+3. Be EXTREMELY STRICT - default to AMBIGUOUS unless:
+   - Specific location mentioned (PPBC, PPCAL, PPMTL, etc.)
+   - OR specific product type + clear scope
+   - OR explicitly says "all" with confirmation needed
 
 Examples:
-- "Show me all products" → Ambiguous: No filter specified (which location? which type?)
-- "List products at PPBC" → Not ambiguous: Location filter specified
-- "Show recent inventory" → Ambiguous: What does "recent" mean?
+❌ "List products" → AMBIGUOUS (no filters - all 18k records?)
+❌ "Show BEAMS" → AMBIGUOUS (which location?)
+❌ "Display inventory" → AMBIGUOUS (where? what type?)
+❌ "Show stock levels" → AMBIGUOUS (which location?)
+✅ "List products at PPBC" → CLEAR (location specified)
+✅ "Show all BEAMS at all locations" → CLEAR (explicitly all)
 
 Respond in JSON format:
 {{
