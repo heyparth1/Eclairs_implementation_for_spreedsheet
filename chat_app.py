@@ -154,11 +154,26 @@ Code: result = df[(df['Location'] == 'PPMTL') & (df['Product Type'] == 'BEAMS')]
 Query: "Total Wt grouped by Product Type and Location for PPBC"
 Code: result = df[df['Location'] == 'PPBC'].groupby(['Product Type', 'Location'])['Total Wt (Tons )'].sum()
 
-UNIT CONVERSION RULES:
+UNIT CONVERSION RULES (CRITICAL):
 The spreadsheet has weight columns in specific units:
-- Total Wt (Tons )  → in TONS
-- Wt/Ft (lbs)       → in POUNDS per foot  
-- WT/Pce (lbs)      → in POUNDS per piece
+- 'Total Wt (Tons )'  → in TONS (Multiply by 2000 to get LBS)
+- 'Wt/Ft (lbs)'       → in LBS per foot
+- 'WT/Pce (lbs)'      → in LBS per piece
+
+1. IF USER DOES NOT SPECIFY UNIT: Use the column's default unit.
+   - "Total weight" -> `df['Total Wt (Tons )'].sum()` (Result is in Tons)
+
+2. IF USER SPECIFIES 'LBS' or 'POUNDS':
+   - For 'Total Wt': MUST CONVERT → `df['Total Wt (Tons )'].sum() * 2000`
+   - For 'Wt/Ft': No conversion needed.
+
+3. IF USER SPECIFIES 'TONS':
+   - For 'Total Wt': No conversion needed.
+   - For 'Wt/Ft': `df['Wt/Ft (lbs)'].mean() / 2000`
+
+4. LABEL YOUR ANSWER: When explaining the result, YOU MUST STATE THE UNIT.
+   - "The total weight is 50,000 lbs" (if converted).
+   - "The total weight is 25 tons".
 
 If user asks for different units, CONVERT:
 - Tons to kgs: multiply by 1000
