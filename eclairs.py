@@ -107,7 +107,7 @@ class SchemaGroundingAgent:
             
             num_unique = len(unique_vals)
             
-            if num_unique < 100:
+            if num_unique < 100 or col in ['Product Type', 'Location', 'Product Description']:
                 schema['unique_values'][col] = unique_vals.tolist()
                 schema['categorical_columns'][col] = unique_vals.tolist()
             elif num_unique > 1000:
@@ -150,6 +150,17 @@ class SchemaGroundingAgent:
         if self.schema.get('high_cardinality_columns'):
             context += "**Identifier Columns**: "
             context += f"{', '.join(self.schema['high_cardinality_columns'])}\n\n"
+        
+        # Load enhanced domain context if available
+        domain_file = os.path.join(os.path.dirname(self.file_path), 'domain_context.md')
+        if os.path.exists(domain_file):
+            try:
+                with open(domain_file, 'r', encoding='utf-8') as f:
+                    domain_context = f.read()
+                context += "\n=== DOMAIN KNOWLEDGE & CONVENTIONS ===\n"
+                context += domain_context + "\n"
+            except Exception as e:
+                print(f"⚠️ Failed to load domain_context.md: {e}")
         
         return context
     
@@ -195,6 +206,10 @@ USER QUERY:
    - Total Value
    - Current Stock
 
+2. Query mentions "value", "cost", or "price" → MUST ASK: Which value metric?
+   - Total Value
+   - Current Stock
+
 3. Query mentions "type" → MUST ASK: Which type column?
    - Product Type
    - Type/SNo
@@ -203,7 +218,9 @@ USER QUERY:
    - Qty (PCS)
    - Current Stock
 
-⚠️ DO NOT ASSUME - If generic terms are used without exact column names, FLAG AS AMBIGUOUS
+🚫 NEGATIVE CONSTRAINTS:
+- DO NOT flag "weight" as ambiguous unless the word "weight", "wt", "heaviest", "tons", "lbs" or similar is EXPLICITLY in the query.
+- If query is just "List products" or "Show 40s", DO NOT assume it's about weight.
 
 Respond in JSON format:
 {{
@@ -277,37 +294,50 @@ class ValueAmbiguityAgent(BaseLLMAgent):
 CATEGORICAL COLUMNS AND VALUES:
 {cat_context}
 
+DOMAIN CONTEXT (Naming Conventions & Codes):
+{self.schema.get('domain_context_snippet', 'See full schema context for details')}
+
 USER QUERY:
 "{query}"
 
-🚨 YOUR ONLY JOB: Detect country/entity/location name ambiguities
+🚨 YOUR JOB: Detect Country, Entity, and NUMERIC/DIMENSION ambiguity.
 
-DO NOT FLAG:
-- Column selection (that's COLUMN agent's job)
-- Grouping/aggregation (that's AGGREGATION agent's job)
-- "weight", "value", "stock" references (COLUMN agent handles this)
+1. Country/Entity Ambiguity:
+   - "USA", "Canada", "Korea" → These are **ORIGIN COUNTRIES**.
+   - Rule: **Origins are stored in 'Product Description'**.
+   - STATUS: **CLEAR** (Do not flag as ambiguous. SQL generator handles this.)
+   - "North", "South" → Vague location? (AMBIGUOUS)
 
-ONLY FLAG AS AMBIGUOUS:
-1. Country names (USA, Canada, Korea) → Ask which field contains this
-2. Entity references that could be in multiple fields
-3. Vague location references
+2. NUMERIC / DIMENSION AMBIGUITY (CRITICAL):
 
-Examples:
-❌ "Show weight" → NOT your concern (COLUMN agent handles this)
-❌ "Total value" → NOT your concern (COLUMN agent handles this)
-✅ "Show products in USA" → AMBIGUOUS (which field has USA?)
-✅ "Give me Canada items" → AMBIGUOUS (where is Canada specified?)
-✅ "Items from Korea" → AMBIGUOUS (which field contains Korea?)
+2. NUMERIC / DIMENSION AMBIGUITY (CRITICAL):
+   - "40s", "20s", "60s", "8x8" → These are ambiguous numbers.
+   - Refer to **Measurement Definitions** in Context.
+   - Could be:
+     - **Length** (in Feet) - e.g., 40ft
+     - **OD / Width** (in Inches) - e.g., 40" OD
+     - **Wall Thickness** (in Inches)
+     - **Grade** (e.g., Grade 40)
+   - 🚫 NEVER suggest "Schedule", "Height", or "Class". They do not exist.
+
+   EXAMPLE: "List the 40s"
+   → AMBIGUOUS: "Do you mean 40ft Length, 40 inch OD/Width, or Grade 40?"
+
+3. DO NOT FLAG:
+   - Column names (COLUMN agent job). **ESPECIALLY IGNORE**:
+     - "weight", "wt", "value", "price", "cost", "stock", "quantity".
+     - These are updated by the COLUMN agent. DO NOT FLAG THEM AS AMBIGUOUS VALUES.
+   - Explicit filters ("Length 40", "Grade 50")
 
 Respond in JSON format:
 {{
   "ambiguous": true/false,
   "ambiguous_entities": [
     {{
-      "entity": "USA",
-      "type": "unclear_field",
-      "issue": "Not specified which field contains 'USA'",
-      "possible_fields": ["Product Description", "Location codes"]
+      "entity": "40s",
+      "type": "numeric_ambiguity",
+      "issue": "Could be Length, OD/Width, or Grade",
+      "possible_meanings": ["40ft Length", "40 inch OD", "Grade 40"]
     }}
   ]
 }}
@@ -373,20 +403,32 @@ USER QUERY:
 
 🚨 STRICT RULES - FLAG AS AMBIGUOUS IF QUERY:
 
-1. Uses aggregation words (total, sum, average, count, show, list) BUT:
+1. Uses aggregation words (total, sum, average) BUT:
    - Does NOT specify exact metric column name
    - Does NOT specify grouping ("by Location", "by Product Type", or "overall")
 
-2. Be EXTREMELY STRICT:
+2. SPECIAL RULE FOR "COUNT":
+   - "Count" does NOT require a metric column (it implies counting rows/size).
+   - "Count the beams" → CLEAR (if 'beams' is a filter).
+   - "Count the pipes at each location" → CLEAR (Grouping: Location).
+   - ONLY flag "Count" as ambiguous if the grouping is unclear or conflict (e.g., "count by type and location or something else?").
+
+3. "List" or "Show" are NOT aggregations (they are Filters/Row Selection):
+   - "List the 40s" → NOT AMBIGUOUS for Aggregation. It means "Select Rows".
+   - "List the 40s by Width" → THIS IS SORTING, NOT AGGREGATION. Result: false.
+
+4. Be EXTREMELY STRICT with METRICS:
    ❌ "total weight" → AMBIGUOUS (which weight? group by what?)
-   ❌ "show products" → AMBIGUOUS (filter criteria? grouping?)
-   ❌ "average value" → AMBIGUOUS (which value column? group by what?)
-   ❌ "list stock" → AMBIGUOUS (which location? which type?)
-   ✅ "Total Wt (Tons ) grouped by Location" → CLEAR (exact column + grouping)
+   ✅ "Total Wt (Tons )" → CLEAR
+   ✅ "List the 40s" → CLEAR (Row Selection only)
 
-3. If query is vague or uses generic terms, FLAG AS AMBIGUOUS
+5. If query is vague or uses generic terms like "average", FLAG AS AMBIGUOUS
 
-⚠️ DEFAULT TO AMBIGUOUS - Only mark as clear if query is 100% explicit
+6. 🚫 NEGATIVE CONSTRAINTS (CRITICAL):
+   - NEVER suggest metrics that are NOT in the "Numeric columns" list above.
+   - "Length", "Width", "Height", "Schedule" are NOT columns (except OD=Width). DO NOT suggest aggregating them.
+   - We CANNOT calculate "average length" or "total length".
+   - If user asks for "average length", FAIL GRACEFULLY or ask if they mean "Avg Wt/Ft".
 
 Respond in JSON format:
 {{
@@ -449,42 +491,52 @@ class TemporalFilterAmbiguityAgent(BaseLLMAgent):
     
     def __init__(self, schema: Dict[str, Any], llm_client: OpenAI):
         super().__init__(schema, llm_client)
-        self.categorical_columns = list(schema.get('categorical_columns', {}).keys())
+        self.categorical_columns = schema.get('categorical_columns', {})
     
     def detect_ambiguity(self, query: str) -> Dict[str, Any]:
         """Use LLM to detect filter/temporal ambiguities"""
         
+        # Build categorical values context
+        cat_context = ""
+        for col, values in self.categorical_columns.items():
+            # Take only first 30 values to avoid token limit, but enough for context
+            cat_context += f"- {col} Options: {', '.join(map(str, values[:30]))}\n"
+        
         prompt = f"""You are a STRICT filter ambiguity detector for spreadsheet queries.
 
-AVAILABLE FILTERS:
-{', '.join(self.categorical_columns)}
+AVAILABLE FILTERS AND DATA VALUES:
+{cat_context}
 
 USER QUERY:
 "{query}"
 
-🚨 STRICT RULES - FLAG AS AMBIGUOUS IF:
+🚨 STRICT RULES for detecting ambiguity:
 
-1. Query uses broad terms WITHOUT specific filters:
-   - "List products" → AMBIGUOUS: Which location? Which product type? All 18k records?
-   - "Show inventory" → AMBIGUOUS: No filter criteria specified
-   - "Display stock" → AMBIGUOUS: Which location(s)?
+1. **CRITICAL: "Generic Location Terms" Check (HIGHEST PRIORITY)**:
+   - If query mentions "yard", "warehouse", "site", or "location" (roughly matches) BUT *DOES NOT* mention a specific code (like PPBC, PPMTL, etc.), you **MUST FLAG AS AMBIGUOUS**.
+     - Query: "How much weight is in the yard?"
+     - Issue: "User mentioned 'yard' but didn't specify WHICH yard."
+     - Action: Return ambiguous=true, suggests: ["PPBC", "PPMTL", "PPCAL", "etc..."]
 
-2. Query lacks specificity about scope:
-   - "Show BEAMS" → AMBIGUOUS: At which location? All locations?
-   - "Total weight" → AMBIGUOUS: For all locations or specific one?
+2. CHECK IF VALUE ALREADY EXISTS:
+   - If query mentions a value that matches one of the "Options" above (case-insensitive), DO NOT ask for that filter.
+   - Example: If "Product Type" options include "BEAMS", it IS specified.
 
-3. Be EXTREMELY STRICT - default to AMBIGUOUS unless:
-   - Specific location mentioned (PPBC, PPCAL, PPMTL, etc.)
-   - OR specific product type + clear scope
-   - OR explicitly says "all" with confirmation needed
+3. ONLY SUGGEST VALID OPTIONS:
+   - NEVER hallucinate options. Only suggest values listed in "AVAILABLE FILTERS" above.
+   - If you ask for a "Product Type", you MUST list actual values from the data (e.g., "BEAMS", "PIPE", "SHEET", "COILS").
+   - NEVER suggest "40s", "OD", "Length", or query terms as Product Types.
+
+4. FLAG AS AMBIGUOUS ONLY IF:
+   - Query is broad (e.g., "Show inventory") AND no specific value from "AVAILABLE FILTERS" is mentioned.
+   - A critical filter (Location, Product Type) is completely missing AND not implied by the values.
 
 Examples:
-❌ "List products" → AMBIGUOUS (no filters - all 18k records?)
-❌ "Show BEAMS" → AMBIGUOUS (which location?)
-❌ "Display inventory" → AMBIGUOUS (where? what type?)
-❌ "Show stock levels" → AMBIGUOUS (which location?)
-✅ "List products at PPBC" → CLEAR (location specified)
-✅ "Show all BEAMS at all locations" → CLEAR (explicitly all)
+✅ "List beams" → Product Type is CLEAR (matches 'BEAMS'). Check if Location is missing.
+✅ "Show BEAMS at PPMTL" → ALL CLEAR (matches 'BEAMS' and 'PPMTL').
+❌ "Show inventory" → AMBIGUOUS (No specific values mentioned).
+❌ "Weight in the yard" → AMBIGUOUS (Which yard? PPBC? PPMTL?).
+❌ "Show columns" → AMBIGUOUS (If 'columns' is NOT in Options, then it's invalid/unclear. If it IS in Options, it's clear).
 
 Respond in JSON format:
 {{
@@ -492,13 +544,13 @@ Respond in JSON format:
   "issues": [
     {{
       "type": "missing_filter",
-      "reason": "Query is too broad without filter criteria",
+      "reason": "Query is too broad...",
       "suggestions": ["Product Type", "Location"]
     }}
   ]
 }}
 
-If not ambiguous, return: {{"ambiguous": false, "issues": []}}
+If not ambiguous, or if values are present, return: {{"ambiguous": false, "issues": []}}
 """
         
         response = self._call_llm(prompt, max_tokens=300)
@@ -548,6 +600,10 @@ class ECLAIRSpreadsheetSystem:
         # Load data
         self.df = pd.read_excel(file_path)
         
+        # FIX: Ensure 'Type/SNo' is string to prevent PyArrow serialization errors with mixed types
+        if 'Type/SNo' in self.df.columns:
+            self.df['Type/SNo'] = self.df['Type/SNo'].astype(str)
+        
         # Initialize schema grounding
         self.schema_agent = SchemaGroundingAgent(file_path)
         schema = self.schema_agent.schema
@@ -593,15 +649,23 @@ class ECLAIRSpreadsheetSystem:
 
 Based on agent analysis:
 1. Determine if query is ambiguous (YES/NO)
-2. If YES: Generate ONE clarification question with specific options from the spreadsheet
-3. If NO: Respond with "CLARIFICATION: None"
+2. If YES: Generate ONE clarification question.
+
+## PRIORITIZATION RULES (CRITICAL):
+1. **FILTER / SCOPE (HIGHEST PRIORITY)**:
+   - If User Ambiguity Agent detected "missing location" (e.g., "Which yard?") or "missing product type", **ASK THIS FIRST**.
+   - We cannot answer *what* (metrics) if we don't know *where* (location) or *which items* (product type).
+2. **COLUMN / METRIC**:
+   - Ask about "Total Wt vs Wt/Ft" only if Location is clear.
+3. **AGGREGATION**:
+   - Ask about grouping last.
 
 ## OUTPUT FORMAT
 
 AMBIGUOUS: [YES or NO]
 CLARIFICATION: [Your question with options, or "None"]
 
-Example: "Did you mean Total Wt (Tons) or WT/Pce (lbs)? Please also specify grouping: by Location or by Product Type?"
+Example: "Which yard are you referring to? Options: PPBC, PPMTL, etc."
 """
         
         return prompt

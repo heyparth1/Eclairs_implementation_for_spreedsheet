@@ -113,7 +113,36 @@ USER QUERY:
 CRITICAL FILTER RULES:
 1. If query mentions specific locations (PPBC, PPCAL, PPMTL, etc.) → MUST filter by Location column
 2. If query mentions specific product types (BEAMS, COILS, PIPE, SHEET) → MUST filter by Product Type
-3. Extract ALL mentioned filters and apply them BEFORE grouping/aggregating
+3. If query mentions **Countries** (Korea, USA, Canada, etc.) → MUST filter 'Product Description' using str.contains()
+   - Example: `df[df['Product Description'].str.contains('Korea', case=False, na=False)]`
+4. If query mentions **Numbers/Dimensions** (e.g., "40s", "20s", "8x8"):
+   - MUST APPLY AS A FILTER to the relevant column (Length, OD, or Wall).
+   - **OD**: Use `df['OD']` column.
+   - **Length** (Beams/Pipes): use `df['Product ID'].str[11:16]`.
+     - "List the 40s" (clarified as Length) → 
+       `df[pd.to_numeric(df['Product ID'].str[11:16], errors='coerce') == 40]`
+   - DO NOT just sort by the column. YOU MUST FILTER.
+5. Extract ALL mentioned filters and apply them BEFORE grouping/aggregating
+
+ROW SELECTION vs AGGREGATION (CRITICAL):
+- "List", "Show", "Find", "Get" (without words like "Count", "Sum", "Total") → **ROW SELECTION**
+  - Do NOT use `groupby()` or `.size()`.
+  - Return the filtered DataFrame (or select key columns: Product Type, Location, Product Description, OD, Length, Current Stock).
+  - Example: `result = df[df['OD'] == 40][['Product Type', 'Location', 'Product Description', 'OD', 'Current Stock']]`
+  - **SORTING**: If user asks to "sort by X" or implies it ("heavy", "largest"), ADD `.sort_values()` to the result.
+    - "List the 40s" (user implies sort) -> Filter OD=40, then optionally sort by OD.
+- "Count", "Sum", "Total", "Average" → **AGGREGATION**
+  - Use `groupby().sum()` or `groupby().size()`.
+
+QUALITATIVE SORTING RULES:
+1. "Heavy", "Heaviest", "Most Weight" → `df.sort_values(by='[Weight_Column]', ascending=False)`
+2. "Light", "Lightest" → `df.sort_values(by='[Weight_Column]', ascending=True)`
+3. "Expensive", "Highest Value" → `df.sort_values(by='Total Value', ascending=False)`
+4. "Largest", "Biggest" (if referring to OD/Width) → `df.sort_values(by='OD', ascending=False)`
+5. "Longest" → `df.sort_values(by='Length', ascending=False)` (Requires extracting Length first if not a column, but '40s' filter handles this usually).
+
+
+
 
 FILTER EXAMPLES:
 Query: "show Total Wt for PPBC" 
