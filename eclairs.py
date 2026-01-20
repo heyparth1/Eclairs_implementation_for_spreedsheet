@@ -401,30 +401,47 @@ SPREADSHEET SCHEMA:
 USER QUERY:
 "{query}"
 
+🚨 CRITICAL EXCEPTION - METRIC ALREADY SPECIFIED:
+- If query contains a SPECIFIC metric name from the schema above (e.g., "Total Wt (Tons )", "Wt/Ft (lbs)", "WT/Pce (lbs)", "Current Stock"):
+  → DO NOT flag as ambiguous for "unclear_metric"
+  → DO NOT ask "which metric?" again
+  → The metric selection is CLEAR
+  
+- However, you MUST still check if GROUPING is specified:
+  ✅ "How much Total Wt?" → Check if grouping needed (by Location? by Product Type? overall?)
+  ✅ "Total Wt by Location" → CLEAR (metric + grouping both specified)
+  ✅ "Total Wt overall" → CLEAR (metric + "overall" means no grouping)
+  ❌ "How much Total Wt?" → AMBIGUOUS for missing_grouping (group by what? or overall?)
+
 🚨 STRICT RULES - FLAG AS AMBIGUOUS IF QUERY:
 
-1. Uses aggregation words (total, sum, average) BUT:
-   - Does NOT specify exact metric column name
-   - Does NOT specify grouping ("by Location", "by Product Type", or "overall")
+1. Uses aggregation words (total, sum, average, how much) BUT:
+   a) Metric Selection:
+      - Generic term like "weight" or "value" → FLAG as "unclear_metric"
+      - Specific metric name (see CRITICAL EXCEPTION) → DON'T flag for metric
+   
+   b) Grouping:
+      - Missing grouping dimension AND query implies aggregation → FLAG as "missing_grouping"
+      - Has "by Location", "by Product Type", "overall", or "in total" → CLEAR for grouping
 
 2. SPECIAL RULE FOR "COUNT":
    - "Count" does NOT require a metric column (it implies counting rows/size).
    - "Count the beams" → CLEAR (if 'beams' is a filter).
    - "Count the pipes at each location" → CLEAR (Grouping: Location).
-   - ONLY flag "Count" as ambiguous if the grouping is unclear or conflict (e.g., "count by type and location or something else?").
+   - ONLY flag "Count" as ambiguous if the grouping is unclear or conflict.
 
 3. "List" or "Show" are NOT aggregations (they are Filters/Row Selection):
    - "List the 40s" → NOT AMBIGUOUS for Aggregation. It means "Select Rows".
    - "List the 40s by Width" → THIS IS SORTING, NOT AGGREGATION. Result: false.
 
-4. Be EXTREMELY STRICT with METRICS:
-   ❌ "total weight" → AMBIGUOUS (which weight? group by what?)
-   ✅ "Total Wt (Tons )" → CLEAR
+4. EXAMPLES:
+   ❌ "total weight" → AMBIGUOUS (unclear_metric + missing_grouping)
+   ❌ "How much Total Wt?" → AMBIGUOUS (metric clear, but missing_grouping)
+   ✅ "Total Wt (Tons ) by Location" → CLEAR (metric + grouping specified)
+   ✅ "Total Wt (Tons ) overall" → CLEAR (metric + overall specified)
    ✅ "List the 40s" → CLEAR (Row Selection only)
 
-5. If query is vague or uses generic terms like "average", FLAG AS AMBIGUOUS
-
-6. 🚫 NEGATIVE CONSTRAINTS (CRITICAL):
+5. 🚫 NEGATIVE CONSTRAINTS (CRITICAL):
    - NEVER suggest metrics that are NOT in the "Numeric columns" list above.
    - "Length", "Width", "Height", "Schedule" are NOT columns (except OD=Width). DO NOT suggest aggregating them.
    - We CANNOT calculate "average length" or "total length".
@@ -436,8 +453,8 @@ Respond in JSON format:
   "issues": [
     {{
       "type": "missing_grouping",
-      "reason": "Query requests total but doesn't specify grouping dimension",
-      "suggestions": ["Product Type", "Location"]
+      "reason": "Query requests aggregation but doesn't specify grouping dimension",
+      "suggestions": ["Product Type", "Location", "overall"]
     }},
     {{
       "type": "unclear_metric",

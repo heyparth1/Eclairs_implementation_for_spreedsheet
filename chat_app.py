@@ -664,7 +664,7 @@ if prompt := st.chat_input("Ask a question about your data..."):
                     st.rerun()
             else:
                 # ALL CLEAR - generate SQL
-                st.markdown("✅ All agents are clear! Generating SQL...")
+                st.markdown("✅ All agents are clear! Generating pandas query...")
                 
                 # Show cleared agents summary
                 if st.session_state.cleared_agents:
