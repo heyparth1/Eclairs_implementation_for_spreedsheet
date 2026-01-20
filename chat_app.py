@@ -134,6 +134,24 @@ ROW SELECTION vs AGGREGATION (CRITICAL):
 - "Count", "Sum", "Total", "Average" → **AGGREGATION**
   - Use `groupby().sum()` or `groupby().size()`.
 
+DUPLICATE DETECTION (CRITICAL):
+- "Duplicate", "Duplicates", "Repeated" queries → Use `df.duplicated()` or `df[df.duplicated(..., keep=False)]`
+- **NEVER use groupby().filter() with a function that returns a Series!**
+- For "group duplicates by X":
+  ```python
+  # Find rows with duplicate values in a column
+  duplicated_rows = df[df.duplicated(subset='Column', keep=False)]
+  # Then group by the requested dimension
+  result = duplicated_rows.groupby('Product Type')['Column'].value_counts()
+  ```
+- For "show duplicate product descriptions":
+  ```python
+  result = df[df.duplicated(subset='Product Description', keep=False)].drop_duplicates(subset='Product Description')
+  ```
+- **groupby().filter() is ONLY valid when the lambda returns a SCALAR boolean (e.g., `lambda x: len(x) > 1`)**
+  - CORRECT: `df.groupby('Product Type').filter(lambda x: len(x) > 5)`
+  - WRONG: `df.groupby('Product Type').filter(lambda x: x['Column'].notnull())` ← Returns Series!
+
 QUALITATIVE SORTING RULES:
 1. "Heavy", "Heaviest", "Most Weight" → `df.sort_values(by='[Weight_Column]', ascending=False)`
 2. "Light", "Lightest" → `df.sort_values(by='[Weight_Column]', ascending=True)`
@@ -303,11 +321,36 @@ Return ONLY the reformulated query as plain text, nothing else.
     return response.choices[0].message.content.strip()
 
 
-def generate_single_agent_clarification(agent_name: str, agent_output: Dict[str, Any], query: str, client: OpenAI) -> str:
+def generate_single_agent_clarification(agent_name: str, agent_output: Dict[str, Any], query: str, client: OpenAI, eclair) -> str:
     """Generate clarification question for a single specific agent"""
     
     # Extract the actual details from agent detection
     details = agent_output.get('details', 'Ambiguity detected')
+    
+    # Extract schema context based on agent type
+    schema = eclair.schema_agent.schema
+    
+    # Build context based on agent type
+    if 'column' in agent_name.lower():
+        context = f"Available columns: {', '.join(schema['columns'])}"
+    elif 'value' in agent_name.lower():
+        categories = schema.get('categorical_columns', {})
+        context = "Available categories:\n"
+        for col, values in list(categories.items())[:5]:  # Top 5 categorical columns
+            sample_values = list(values)[:10]  # Top 10 values per column
+            context += f"  - {col}: {', '.join(map(str, sample_values))}\n"
+    elif 'aggregation' in agent_name.lower():
+        context = f"Numeric columns: {', '.join(schema['numeric_columns'])}\n"
+        context += f"Grouping options: {', '.join(schema.get('categorical_columns', {}).keys())}"
+    else:
+        # Default: provide both categorical and numeric info
+        categories = schema.get('categorical_columns', {})
+        context = f"Available columns: {', '.join(schema['columns'])}\n"
+        if categories:
+            context += "\nKey categories:\n"
+            for col, values in list(categories.items())[:3]:
+                sample_values = list(values)[:5]
+                context += f"  - {col}: {', '.join(map(str, sample_values))}\n"
     
     prompt = f"""You are helping to clarify an ambiguous spreadsheet query.
 
@@ -316,25 +359,33 @@ User Query: "{query}"
 Agent: {agent_output.get('agent_name', agent_name)}
 Agent's Analysis: {details}
 
+🔍 ACTUAL SCHEMA CONTEXT (USE ONLY THESE VALUES):
+{context}
+
 Your task: Generate ONE clear, concise clarification question based on the agent's analysis.
 
-CRITICAL RULES:
-- Use the EXACT column names and values from the agent's analysis
-- Do NOT make up example data (Sales, Expenses, Electronics, etc.)
-- Extract options from the agent's analysis details
+🚨 CRITICAL RULES:
+- Use ONLY the values from "ACTUAL SCHEMA CONTEXT" above
+- NEVER make up example data like "Electronics, Clothing, Furniture, Sales, Expenses"
+- If the schema shows Product Type values (BEAMS, COILS, PIPE, SHEET), use those exact values
+- If the schema shows Location values (PPBC, PPMTL, PPCAL), use those exact values
+- Extract options from the schema context provided
 - Keep it conversational and user-friendly
 - Ask about ONE thing only
 
 Examples:
 
 Agent Analysis: "Ambiguous column reference: 'weight' could be Wt/Ft (lbs), WT/Pce (lbs), or Total Wt (Tons )"
+Schema Context: Available columns: Product ID, Location, Product Type, Wt/Ft (lbs), WT/Pce (lbs), Total Wt (Tons )
 Question: "Which weight metric would you like? Options: Wt/Ft (lbs), WT/Pce (lbs), or Total Wt (Tons)?"
 
 Agent Analysis: "Query lacks specificity - no location filter specified"
+Schema Context: Available categories: Location: PPBC, PPCAL, PPMTL
 Question: "Which location? Options: PPBC, PPCAL, PPMTL, or all locations?"
 
-Agent Analysis: "Missing grouping criteria"
-Question: "How would you like to group the results? Options: by Location, by Product Type, or show overall total?"
+Agent Analysis: "Generic query needs dimension clarification"
+Schema Context: Available categories: Product Type: BEAMS, COILS, PIPE, SHEET
+Question: "Which product type are you interested in? Options: BEAMS, COILS, PIPE, SHEET, or all types?"
 
 Return ONLY the clarification question, nothing else.
 """
@@ -589,7 +640,8 @@ if prompt := st.chat_input("Ask a question about your data..."):
                         ambiguous_agent,
                         agent_output,
                         st.session_state.expanded_query,
-                        client
+                        client,
+                        eclair
                     )
                     
                     response_text = f"**Clarifying {ambiguous_agent.upper()}:**\n\n{clarification}"
