@@ -124,6 +124,19 @@ CRITICAL FILTER RULES:
    - DO NOT just sort by the column. YOU MUST FILTER.
 5. Extract ALL mentioned filters and apply them BEFORE grouping/aggregating
 
+COMPUTED COLUMNS (CRITICAL):
+- The column 'Length' DOES NOT EXIST in the original DataFrame. It is computed from `Product ID`.
+- ❌ WRONG (Chaining): `result = df.assign(Length=...).query('Length == 40')` OR `df.assign(Length...)[df['Length'] == 40]`
+  - Referencing `df['Length']` inside the filter fails because `df` is the old dataframe!
+- ✅ CORRECT (Multi-step):
+  ```python
+  # Step 1: Create new dataframe with computed column
+  df_with_len = df.assign(Length=pd.to_numeric(df['Product ID'].str[11:16], errors='coerce'))
+  # Step 2: Filter the NEW dataframe
+  result = df_with_len[df_with_len['Length'].isin([40, 60])]
+  ```
+- **ALWAYS** use a separate assignment step when filtering by Length.
+
 ROW SELECTION vs AGGREGATION (CRITICAL):
 - "List", "Show", "Find", "Get" (without words like "Count", "Sum", "Total") → **ROW SELECTION**
   - Do NOT use `groupby()` or `.size()`.

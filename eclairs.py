@@ -220,7 +220,8 @@ USER QUERY:
 
 🚫 NEGATIVE CONSTRAINTS:
 - DO NOT flag "weight" as ambiguous unless the word "weight", "wt", "heaviest", "tons", "lbs" or similar is EXPLICITLY in the query.
-- If query is just "List products" or "Show 40s", DO NOT assume it's about weight.
+- DO NOT flag "type" unless the word "type" is EXPLICITLY in the query.
+- If query is just "List products" or "Show 40s", DO NOT assume it's about weight or type.
 
 Respond in JSON format:
 {{
@@ -309,8 +310,6 @@ USER QUERY:
    - "North", "South" → Vague location? (AMBIGUOUS)
 
 2. NUMERIC / DIMENSION AMBIGUITY (CRITICAL):
-
-2. NUMERIC / DIMENSION AMBIGUITY (CRITICAL):
    - "40s", "20s", "60s", "8x8" → These are ambiguous numbers.
    - Refer to **Measurement Definitions** in Context.
    - Could be:
@@ -320,7 +319,7 @@ USER QUERY:
      - **Grade** (e.g., Grade 40)
    - 🚫 NEVER suggest "Schedule", "Height", or "Class". They do not exist.
 
-   EXAMPLE: "List the 40s"
+   EXAMPLE: "List the 40s" or "Compare 40s and 60s"
    → AMBIGUOUS: "Do you mean 40ft Length, 40 inch OD/Width, or Grade 40?"
 
 3. DO NOT FLAG:
